@@ -97,19 +97,22 @@ class LlamaMLP(nn.Module):
 
 class LlamaAttention(nn.Module):
 
-    def __init__(self,
-                 config: LlamaConfig,
-                 hidden_size: int,
-                 num_heads: int,
-                 num_kv_heads: int,
-                 rope_theta: float = 10000,
-                 rope_scaling: Optional[Dict[str, Any]] = None,
-                 max_position_embeddings: int = 8192,
-                 quant_config: Optional[QuantizationConfig] = None,
-                 bias: bool = False,
-                 bias_o_proj: bool = False,
-                 cache_config: Optional[CacheConfig] = None,
-                 prefix: str = "") -> None:
+    def __init__(
+        self,
+        config: LlamaConfig,
+        hidden_size: int,
+        num_heads: int,
+        num_kv_heads: int,
+        rope_theta: float = 10000,
+        rope_scaling: Optional[Dict[str, Any]] = None,
+        max_position_embeddings: int = 8192,
+        quant_config: Optional[QuantizationConfig] = None,
+        bias: bool = False,
+        bias_o_proj: bool = False,
+        cache_config: Optional[CacheConfig] = None,
+        prefix: str = "",
+        dual_chunk_attention_config: Optional[Dict[str, Any]] = None,
+    ) -> None:
         super().__init__()
         layer_idx = extract_layer_index(prefix)
         self.hidden_size = hidden_size
@@ -138,6 +141,7 @@ class LlamaAttention(nn.Module):
         self.scaling = self.head_dim**-0.5
         self.rope_theta = rope_theta
         self.max_position_embeddings = max_position_embeddings
+        self.dual_chunk_attention_config = dual_chunk_attention_config
 
         self.qkv_proj = QKVParallelLinear(
             hidden_size=hidden_size,
@@ -169,6 +173,7 @@ class LlamaAttention(nn.Module):
             base=rope_theta,
             rope_scaling=rope_scaling,
             is_neox_style=is_neox_style,
+            dual_chunk_attention_config=dual_chunk_attention_config,
         )
 
         if hasattr(config, "interleaved_sliding_window"):
@@ -193,7 +198,10 @@ class LlamaAttention(nn.Module):
             quant_config=quant_config,
             per_layer_sliding_window=sliding_window,
             prefix=f"{prefix}.attn",
-        )
+            **{
+                "layer_idx": extract_layer_index(prefix),
+                "dual_chunk_attention_config": dual_chunk_attention_config,
+            } if dual_chunk_attention_config else {})
 
     def forward(
         self,
@@ -236,6 +244,11 @@ class LlamaDecoderLayer(nn.Module):
         if hasattr(config, 'qkv_bias'):
             attention_bias = config.qkv_bias
 
+        # Add support for dual_chunk_attention if specified in the config
+        dual_chunk_attention_config = getattr(config,
+                                              "dual_chunk_attention_config",
+                                              None)
+
         self.self_attn = LlamaAttention(
             config=config,
             hidden_size=self.hidden_size,
@@ -250,6 +263,7 @@ class LlamaDecoderLayer(nn.Module):
             bias_o_proj=bias_o_proj,
             cache_config=cache_config,
             prefix=f"{prefix}.self_attn",
+            dual_chunk_attention_config=dual_chunk_attention_config,
         )
         self.mlp = LlamaMLP(
             hidden_size=self.hidden_size,
